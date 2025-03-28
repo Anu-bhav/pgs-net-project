@@ -30,7 +30,7 @@ class PotentialEnergyForceV2(FormalForceCalculator):
         Initializes the PotentialEnergyForceV2 calculator.
 
         Args:
-            config (Dict): Configuration dictionary (expects 'update_forces.formal_force_params').
+            config (Dict): Full PGS_FFN configuration dictionary.
             is_complex (bool): Whether inputs are complex.
             dtype (torch.dtype): Data type (real or complex).
         """
@@ -42,11 +42,11 @@ class PotentialEnergyForceV2(FormalForceCalculator):
         self.repel_radius_sq = self.params.get("token_repulsion_radius", 1.0) ** 2
         self.repel_potential_type = self.params.get("repulsion_potential_type", "smoothed_inverse_sq")
         self.repel_eps = self.params.get("repulsion_smooth_eps", 1e-3)
-        self.align_w = self.params.get("alignment_weight", 0.0)  # Alignment weight
+        self.align_w = self.params.get("alignment_weight", 0.0)  # Alignment weight (requires velocity state)
         self.is_complex = is_complex
         self.dtype = dtype
         logger.info(
-            f"Initialized PotentialEnergyForceV2 (AttrCen={self.attr_centroid_w}, AttrGlob={self.attr_global_w}, RepelTok={self.repel_token_w}, Align={self.align_w})."
+            f"Initialized PotentialEnergyForceV2 (AttrCen={self.attr_centroid_w}, AttrGlob={self.attr_global_w}, RepelTok={self.repel_token_w}, AlignW={self.align_w})."
         )
 
     def calculate_force(
@@ -58,56 +58,56 @@ class PotentialEnergyForceV2(FormalForceCalculator):
         centroids_h: torch.Tensor,
     ) -> torch.Tensor:
         """Calculates force = -gradient(Energy, x_h)."""
-        # Create a new tensor that requires grad for the gradient calculation
-        x_h_input = x_h.detach().clone().requires_grad_(True)
+        # Ensure input requires grad for autograd
+        x_h_input = x_h if x_h.requires_grad else x_h.detach().clone().requires_grad_(True)
         B, T, D = x_h_input.shape
-        K = centroids_h.shape[0]
+        if K_max := centroids_h.shape[0] == 0:
+            return torch.zeros_like(x_h)  # Handle case with no centroids
 
         total_energy = torch.tensor(0.0, device=x_h.device, dtype=torch.float32)  # Energy must be scalar float
+        energy_terms = {}  # For analysis/debugging
 
-        # --- Define Potential Energy E w.r.t x_h_input ---
-        energy_terms = {}  # For analysis
+        # Use detached assignments and queen/centroids for potential calculation
+        A_detached = A.detach().float()  # Ensure float
+        centroids_detached = centroids_h.detach()
+        global_queen_detached = global_queen.detach() if global_queen is not None else None
 
-        # 1. Attraction to Centroids (weighted by assignment A)
+        # 1. Attraction to Centroids (weighted by A)
         if self.attr_centroid_w > 0:
+            diff_to_centroids = x_h_input.unsqueeze(2) - centroids_detached.unsqueeze(0).unsqueeze(0)  # B, T, K, D
             # Use squared distance potential: E = w * A * ||x-c||^2
-            diff_to_centroids = x_h_input.unsqueeze(2) - centroids_h.detach().unsqueeze(0).unsqueeze(
-                0
-            )  # Treat centroids as fixed points for this gradient
             dist_sq_to_centroids = diff_to_centroids.abs().pow(2).sum(dim=-1)  # B, T, K (Real)
-            energy_attr = (A.detach() * dist_sq_to_centroids).sum()  # Sum over B, T, K. Detach A.
+            energy_attr = (A_detached * dist_sq_to_centroids).sum() / (B * T)  # Average energy per token
             total_energy = total_energy + self.attr_centroid_w * energy_attr
             energy_terms["E_attr_centroid"] = energy_attr.item()
 
         # 2. Attraction to Global Queen
-        if self.attr_global_w > 0 and global_queen is not None:
-            # Use detached global queen
-            diff_to_global = x_h_input - global_queen.detach().unsqueeze(1)  # (B,T,D)
+        if self.attr_global_w > 0 and global_queen_detached is not None:
+            diff_to_global = x_h_input - global_queen_detached.unsqueeze(1)  # (B,T,D)
             dist_sq_to_global = diff_to_global.abs().pow(2).sum(dim=-1)  # (B,T) Real
-            energy_global_attr = dist_sq_to_global.sum()  # Sum over B, T
+            energy_global_attr = dist_sq_to_global.sum() / (B * T)  # Average energy per token
             total_energy = total_energy + self.attr_global_w * energy_global_attr
             energy_terms["E_attr_global"] = energy_global_attr.item()
 
         # 3. Pairwise Token Repulsion (within radius, smoothed)
         if self.repel_token_w > 0 and T > 1:
             logger.debug("Calculating Token Repulsion Energy...")
-            x_flat = x_h_input.view(B * T, D)
-            # Calculate pairwise squared distances efficiently
-            dist_sq_flat = torch.zeros((B * T, B * T), device=x_h.device, dtype=torch.float32)  # Placeholder type
+            repulsion_energy_val = 0.0
             try:
+                x_flat = x_h_input.view(B * T, D)
+                # Calculate pairwise squared distances efficiently (handle complex)
+                dist_sq_flat = torch.zeros((B * T, B * T), device=x_h.device, dtype=torch.float32)
                 if self.is_complex:
                     x_norm_sq = x_flat.abs().pow(2).sum(-1)
                     xy_dot_real = torch.real(torch.matmul(x_flat, x_flat.t().conj()))
                     dist_sq_flat = x_norm_sq.unsqueeze(1) + x_norm_sq.unsqueeze(0) - 2 * xy_dot_real
                 else:
-                    # cdist can be memory intensive for large BT
-                    # Manual calculation might be better if T is large
-                    # dist_sq_flat = torch.cdist(x_flat, x_flat, p=2).pow(2)
                     x_norm_sq = x_flat.pow(2).sum(-1)
                     xy_dot = torch.matmul(x_flat, x_flat.t())
                     dist_sq_flat = x_norm_sq.unsqueeze(1) + x_norm_sq.unsqueeze(0) - 2 * xy_dot
                 dist_sq_flat = dist_sq_flat.float().clamp(min=0)  # Ensure real float and non-negative
 
+                # Apply radius mask
                 radius_mask = (dist_sq_flat < self.repel_radius_sq).float()
                 radius_mask.fill_diagonal_(0)
 
@@ -117,20 +117,22 @@ class PotentialEnergyForceV2(FormalForceCalculator):
                 else:  # 'smoothed_inverse_sq'
                     potential = self.repel_token_w * radius_mask / (dist_sq_flat + self.repel_eps)
 
-                # Sum upper triangle only
-                energy_repel = torch.triu(potential, diagonal=1).sum()
+                # Sum upper triangle only, average per token pair approx (N*(N-1)/2 pairs)
+                num_pairs = (B * T) * (B * T - 1) / 2.0
+                energy_repel = torch.triu(potential, diagonal=1).sum() / max(1.0, num_pairs)  # Average over potential pairs
                 total_energy = total_energy + energy_repel
-                energy_terms["E_repel_token"] = energy_repel.item()
-                logger.debug(f"FormalForceV2: Token Repulsion Energy = {energy_repel.item()}")
+                repulsion_energy_val = energy_repel.item()
+                logger.debug(f"FormalForceV2: Avg Token Repulsion Energy = {repulsion_energy_val:.4g}")
             except Exception as e:
                 logger.error(f"Token Repulsion energy calculation failed: {e}", exc_info=True)
+            energy_terms["E_repel_token"] = repulsion_energy_val
 
-        # 4. Alignment Energy (Requires velocity state - Placeholder)
+        # 4. Alignment Energy (Placeholder - Requires velocity)
         if self.align_w > 0:
             logger.warning("FormalForceV2: Alignment energy term requires velocity state, not implemented.")
-            # Placeholder: E_align = w_align * sum_{i,j} mask_ij * (1 - cos(v_i, v_j))
+            energy_terms["E_align"] = 0.0
 
-        logger.debug(f"FormalForceV2 - Total Energy Terms: {energy_terms}")
+        logger.debug(f"FormalForceV2 - Total Energy Terms: {energy_terms}, Total = {total_energy.item():.4g}")
 
         # --- Calculate Gradient ---
         if total_energy == 0.0 or not x_h_input.requires_grad:
@@ -138,31 +140,37 @@ class PotentialEnergyForceV2(FormalForceCalculator):
             return torch.zeros_like(x_h)
 
         start_grad = time.time()
+        force = torch.zeros_like(x_h)  # Default zero force
         try:
             grad_outputs = torch.ones_like(total_energy)
             gradients = torch.autograd.grad(
                 outputs=total_energy,
                 inputs=x_h_input,
                 grad_outputs=grad_outputs,
-                retain_graph=False,  # No need to retain graph for update rule
-                create_graph=False,  # Don't need gradients of gradients
-                allow_unused=True,
+                retain_graph=False,
+                create_graph=False,  # No need for higher order gradients typically
+                allow_unused=True,  # Allow parts of graph to be unused
             )[0]
             grad_time = time.time() - start_grad
             logger.debug(f"FormalForceV2: Gradient calculation took {grad_time:.4f} sec.")
 
-            if gradients is None:
-                logger.warning("FormalForceV2: Gradient computation returned None. Returning zero force.")
-                return torch.zeros_like(x_h)
+            if gradients is not None:
+                force = -gradients  # Force is negative gradient
+                force_norm_avg = torch.linalg.vector_norm(force, dim=-1).mean().item()
+                logger.debug(f"FormalForceV2: Calculated force avg norm = {force_norm_avg:.4g}")
+                # Clamp force magnitude? Optional safety measure
+                # max_force_norm = 10.0
+                # current_norm = torch.linalg.vector_norm(force, dim=-1, keepdim=True)
+                # force = force * torch.clamp(max_force_norm / current_norm.clamp(min=1e-6), max=1.0)
 
-            # Force is the negative gradient
-            force = -gradients
-            force_norm = torch.linalg.vector_norm(force, dim=-1).mean().item()
-            logger.debug(f"FormalForceV2: Calculated force avg norm = {force_norm:.4f}")
-
-            # Detach the final force tensor from the computation graph involving the energy potential
-            return force.detach()
+            else:
+                logger.warning("FormalForceV2: Gradient computation returned None.")
 
         except Exception as e:
             logger.error(f"FormalForceV2: Gradient calculation failed: {e}", exc_info=True)
-            return torch.zeros_like(x_h)  # Return zero force on error
+
+        # Detach the final force tensor
+        return force.detach()
+
+    def extra_repr(self) -> str:
+        return f"attr_c={self.attr_centroid_w}, attr_g={self.attr_global_w}, repel_t={self.repel_token_w}"
