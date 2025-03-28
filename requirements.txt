@@ -1,0 +1,37 @@
+# requirements.txt for PGS-Net Project
+
+# Core Dependencies
+torch>=1.10.0 # Specify your required PyTorch version, potentially with CUDA suffix (e.g., torch>=1.10.0+cu113)
+numpy>=1.20.0
+pandas>=1.3.0
+pyyaml>=5.4 # For loading YAML configuration files
+
+# Visualization Dependencies
+matplotlib>=3.4.0
+seaborn>=0.11.0
+
+# Optional Dependencies (Needed for specific features)
+
+# For Faiss Accelerated Neighbor Search (Boids)
+# Choose EITHER faiss-cpu OR faiss-gpu based on your system and needs.
+# Installation can be complex, refer to Faiss documentation.
+# faiss-cpu>=1.7.0
+# faiss-gpu>=1.7.0 # Requires CUDA compatible with your PyTorch installation
+
+# For UMAP / t-SNE / PCA Projection (Analysis & Visualization)
+scikit-learn>=1.0 # For TSNE, PCA
+umap-learn>=0.5 # For UMAP (often requires numba, llvmlite)
+# pynndescent # Sometimes needed by UMAP
+
+# --- Notes ---
+# 1. PyTorch Version: Ensure your PyTorch version matches your CUDA toolkit version if using GPU acceleration.
+#    Install from pytorch.org for specific CUDA versions.
+# 2. Faiss: Installation of faiss-gpu can be particularly challenging. If you don't need accelerated Boids,
+#    you can omit faiss or install faiss-cpu. PGS-Net will fallback to naive search if Faiss is unavailable.
+# 3. UMAP: umap-learn installation might require installing C++ build tools or specific versions of dependencies like numba and llvmlite.
+
+# Recommended Installation:
+# 1. Install PyTorch matching your system (e.g., from pytorch.org)
+# 2. pip install numpy pandas pyyaml matplotlib seaborn
+# 3. (Optional) Install Faiss (CPU or GPU) following its instructions
+# 4. (Optional) pip install scikit-learn umap-learn
