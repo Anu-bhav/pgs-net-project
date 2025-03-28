@@ -22,7 +22,7 @@ seaborn
 # For UMAP / t-SNE / PCA Projection (Analysis & Visualization)
 scikit-learn # For TSNE, PCA
 umap-learn # For UMAP (often requires numba, llvmlite)
-pynndescent # Sometimes needed by UMAP
+# pynndescent # Sometimes needed by UMAP
 
 # --- Notes ---
 # 1. PyTorch Version: Ensure your PyTorch version matches your CUDA toolkit version if using GPU acceleration.
