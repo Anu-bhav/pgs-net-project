@@ -1,10 +1,12 @@
 # src/pgs_net/modules/cross_layer.py
 """Cross-Layer Communication Handler."""
 
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
-import logging
-from typing import Dict, Any, Optional, List, Tuple
+
 from ..config import DEFAULT_PGS_FFN_CONFIG
 from .complex_utils import ComplexLinear  # Assuming complex_utils is at the same level
 
@@ -23,6 +25,7 @@ class CrossLayerHandler(nn.Module):
             d_head (int): Dimension per head.
             num_heads (int): Number of heads.
             config (Dict[str, Any]): Full PGS_FFN configuration.
+
         """
         super().__init__()
         self.config = config.get("cross_layer", DEFAULT_PGS_FFN_CONFIG["cross_layer"])
