@@ -17,7 +17,7 @@ seaborn
 # Installation can be complex, refer to Faiss documentation.
 # faiss-cpu>=1.7.0
 # faiss-gpu # Requires CUDA compatible with your PyTorch installation
-faiss-gpu==1.7.2
+# faiss-gpu==1.7.2 pip install faiss-gpu-cu12[fix-cuda]
 
 # For UMAP / t-SNE / PCA Projection (Analysis & Visualization)
 scikit-learn # For TSNE, PCA
